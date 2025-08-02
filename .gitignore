@@ -1,0 +1,2 @@
+git rm --cached .coverage
+git rm --cached -r port_for/__pycache__/
