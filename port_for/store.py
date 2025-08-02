@@ -27,17 +27,29 @@ class PortStore(object):
 
         parser = self._get_parser()
 
-        # port is already used by an another app
+        # Check if app already has a port
+        if parser.has_option(DEFAULTSECT, app):
+            existing_port = parser.get(DEFAULTSECT, app)
+            if port is not None and port != existing_port:
+                # Trying to change port for existing app
+                raise PortForException("Cannot change port for app '%s' from %s to %s" % (app, existing_port, port))
+            return int(existing_port)
+
+        # Get all currently bound ports
         app_by_port = dict((v, k) for k, v in parser.items(DEFAULTSECT))
-        bound_port_numbers = map(int, app_by_port.keys())
+        bound_port_numbers = list(map(int, app_by_port.keys()))
 
         if port is None:
+            # Auto-select a port
             port = str(select_random(exclude_ports=bound_port_numbers))
         else:
-            port = str(8888)
+            # Check if requested port is already used by another app
+            if port in app_by_port:
+                raise PortForException("Port %s is already used by app '%s'" % (port, app_by_port[port]))
 
-        # new app & new port
+        # Bind the port
         parser.set(DEFAULTSECT, app, port)
+        self._save(parser)
 
         return int(port)
 
@@ -47,7 +59,10 @@ class PortStore(object):
         self._save(parser)
 
     def bound_ports(self):
-        return []
+        parser = self._get_parser()
+        items = parser.items(DEFAULTSECT)
+        # Return as list of tuples (app, port) with port as integer
+        return [(app, int(port)) for app, port in items]
 
     def _ensure_config_exists(self):
         if not os.path.exists(self._config):

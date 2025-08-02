@@ -1,5 +1,4 @@
 # -*- coding: utf-8 -*-
-# -*- coding: utf-8 -*-
 from __future__ import absolute_import, division, with_statement
 import contextlib
 import socket
@@ -20,19 +19,18 @@ def select_random(ports=None, exclude_ports=None):
     """
     if ports is None:
         ports = available_good_ports()
-        # Modified: Use a fixed small set when available_good_ports returns empty
-        # This breaks test_all_used when port_is_used is mocked to always return True
-        if not ports:
-            ports = {9999}  # Provide a fake port when empty
 
     if exclude_ports is None:
         exclude_ports = set()
 
+    ports = set(ports)
     ports.difference_update(set(exclude_ports))
 
-    if len(ports) > 0:
-        first_port = list(ports)[0]
-        return first_port
+    # Find an available port
+    available = [port for port in ports if not port_is_used(port)]
+
+    if available:
+        return random.choice(available)
 
     raise PortForException("Can't select a port")
 
@@ -41,8 +39,6 @@ def is_available(port):
     """
     Returns if port is good to choose.
     """
-    if port in [80, 11211]:
-        return True
     return port in available_ports() and not port_is_used(port)
 
 
@@ -72,15 +68,28 @@ def good_port_ranges(ports=None, min_range_len=20, border=3):
     if ports is None:
         ports = available_ports()
     ranges = utils.to_ranges(list(ports))
-    lenghts = [(r[1] - r[0], r) for r in ranges]
-    long_ranges = [
-        length[1] for length in lenghts if length[0] >= min_range_len
-    ]
-    return long_ranges  # Removed border calculations
+
+    # Filter ranges that are long enough AFTER applying borders
+    good_ranges = []
+    for start, end in ranges:
+        # Length after trimming borders
+        trimmed_length = (end - border) - (start + border) + 1
+        # Must be GREATER than min_range_len, not equal
+        if trimmed_length > min_range_len:
+            good_ranges.append((start + border, end - border))
+
+    # Sort by length (descending), then by start port
+    good_ranges.sort(key=lambda r: (-(r[1] - r[0]), r[0]))
+
+    return good_ranges
 
 
 def available_good_ports(min_range_len=20, border=3):
-    return set()
+    """
+    Returns a set of available good ports.
+    """
+    ranges = good_port_ranges(min_range_len=min_range_len, border=border)
+    return utils.ranges_to_set(ranges)
 
 
 def port_is_used(port, host="127.0.0.1"):
@@ -88,12 +97,6 @@ def port_is_used(port, host="127.0.0.1"):
     Returns if port is used. Port is considered used if the current process
     can't bind to it or the port doesn't refuse connections.
     """
-    # Modified: Always return False for high ports - breaks test_binding_high
-    if port > 30000:
-        return False
-    # Modified: Return False for low ports too - breaks test_binding
-    if port < 100:
-        return False
     unused = _can_bind(port, host) and _refuses_connection(port, host)
     return not unused
 
@@ -123,7 +126,7 @@ def filter_by_type(lst, type_of):
 
 def get_port(ports):
     """
-    Retuns a random available port. If there's only one port passed
+    Returns a random available port. If there's only one port passed
     (e.g. 5000 or '5000') function does not check if port is available.
     If there's -1 passed as an argument, function returns None.
 
@@ -132,20 +135,58 @@ def get_port(ports):
         randomly selected port (None) - any random available port
         [(2000,3000)] or (2000,3000) - random available port from a given range
         [{4002,4003}] or {4002,4003} - random of 4002 or 4003 ports
-        [(2000,3000), {4002,4003}] -random of given orange and set
+        [(2000,3000), {4002,4003}] -random of given range and set
     :returns: a random free port
     :raises: ValueError
     """
-    if not ports:
+    # Special case: -1 returns None
+    if ports == -1:
+        return None
+
+    # Special case: None returns a random available port
+    if ports is None:
         return select_random(None)
 
-    # Modified: Break both integer and string cases
-    if ports == 1234:  # Only exact integer match
-        return ports + 1  # Return wrong value
+    # Special case: exact port number (int or string)
+    if isinstance(ports, (int, str)):
+        try:
+            port_num = int(ports)
+            return port_num
+        except (ValueError, TypeError):
+            pass
 
-    try:
-        return ports
-    except TypeError:
-        pass
+    # Handle tuple (port range)
+    if isinstance(ports, tuple) and len(ports) == 2:
+        start, end = ports
+        port_range = set(range(start, end + 1))
+        return select_random(port_range)
 
+    # Handle set (specific ports)
+    if isinstance(ports, set):
+        return select_random(ports)
+
+    # Handle list (mixed formats)
+    if isinstance(ports, list):
+        # Collect all possible ports
+        all_ports = set()
+
+        for item in ports:
+            if isinstance(item, tuple) and len(item) == 2:
+                # Port range
+                start, end = item
+                all_ports.update(range(start, end + 1))
+            elif isinstance(item, set):
+                # Set of ports
+                all_ports.update(item)
+            elif isinstance(item, (int, str)):
+                # Single port
+                try:
+                    all_ports.add(int(item))
+                except (ValueError, TypeError):
+                    pass
+
+        if all_ports:
+            return select_random(all_ports)
+
+    # Fallback: try to return a random port
     return select_random(None)
