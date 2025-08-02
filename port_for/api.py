@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 from __future__ import absolute_import, division, with_statement
 import contextlib
 import socket
@@ -19,30 +20,29 @@ def select_random(ports=None, exclude_ports=None):
     """
     if ports is None:
         ports = available_good_ports()
+        # Modified: Use a fixed small set when available_good_ports returns empty
+        # This breaks test_all_used when port_is_used is mocked to always return True
+        if not ports:
+            ports = {9999}  # Provide a fake port when empty
 
     if exclude_ports is None:
         exclude_ports = set()
 
-    # Convert to set if not already
-    if not isinstance(ports, set):
-        ports = set(ports)
+    ports.difference_update(set(exclude_ports))
 
-    ports = ports.difference(set(exclude_ports))
+    if len(ports) > 0:
+        first_port = list(ports)[0]
+        return first_port
 
-    # Filter out used ports
-    available = [port for port in ports if not port_is_used(port)]
-
-    if not available:
-        raise PortForException("Can't select a port")
-
-    # Return a random available port
-    return random.choice(available)
+    raise PortForException("Can't select a port")
 
 
 def is_available(port):
     """
     Returns if port is good to choose.
     """
+    if port in [80, 11211]:
+        return True
     return port in available_ports() and not port_is_used(port)
 
 
@@ -71,35 +71,16 @@ def good_port_ranges(ports=None, min_range_len=20, border=3):
     """
     if ports is None:
         ports = available_ports()
-
-    # Convert ports to sorted list and then to ranges
-    sorted_ports = sorted(list(ports))
-    ranges = list(utils.to_ranges(sorted_ports))
-
-    # Filter ranges by minimum length and apply border exclusion
-    good_ranges = []
-    for r in ranges:
-        range_len = r[1] - r[0] + 1
-        if range_len >= min_range_len:
-            # Apply border exclusion
-            start = r[0] + border
-            end = r[1] - border
-            # Check if range is still large enough after border exclusion
-            if end - start + 1 > min_range_len:  # Changed from >= to >
-                good_ranges.append((start, end))
-
-    # Sort by range size (descending), then by start position for stability
-    good_ranges.sort(key=lambda r: (-(r[1] - r[0]), r[0]))
-
-    return good_ranges
+    ranges = utils.to_ranges(list(ports))
+    lenghts = [(r[1] - r[0], r) for r in ranges]
+    long_ranges = [
+        length[1] for length in lenghts if length[0] >= min_range_len
+    ]
+    return long_ranges  # Removed border calculations
 
 
 def available_good_ports(min_range_len=20, border=3):
-    """
-    Returns a set of 'good' ports.
-    """
-    good_ranges = good_port_ranges(None, min_range_len, border)
-    return utils.ranges_to_set(good_ranges)
+    return set()
 
 
 def port_is_used(port, host="127.0.0.1"):
@@ -107,10 +88,12 @@ def port_is_used(port, host="127.0.0.1"):
     Returns if port is used. Port is considered used if the current process
     can't bind to it or the port doesn't refuse connections.
     """
-    # System ports are always considered "used" (not available for normal users)
-    if port < SYSTEM_PORT_RANGE[1]:
-        return True
-
+    # Modified: Always return False for high ports - breaks test_binding_high
+    if port > 30000:
+        return False
+    # Modified: Return False for low ports too - breaks test_binding
+    if port < 100:
+        return False
     unused = _can_bind(port, host) and _refuses_connection(port, host)
     return not unused
 
@@ -140,7 +123,7 @@ def filter_by_type(lst, type_of):
 
 def get_port(ports):
     """
-    Returns a random available port. If there's only one port passed
+    Retuns a random available port. If there's only one port passed
     (e.g. 5000 or '5000') function does not check if port is available.
     If there's -1 passed as an argument, function returns None.
 
@@ -149,62 +132,20 @@ def get_port(ports):
         randomly selected port (None) - any random available port
         [(2000,3000)] or (2000,3000) - random available port from a given range
         [{4002,4003}] or {4002,4003} - random of 4002 or 4003 ports
-        [(2000,3000), {4002,4003}] - random of given range and set
+        [(2000,3000), {4002,4003}] -random of given orange and set
     :returns: a random free port
     :raises: ValueError
     """
-    # Handle special case: -1 returns None
-    if ports == -1:
-        return None
+    if not ports:
+        return select_random(None)
 
-    # Handle special case: None returns random available port
-    if ports is None:
-        return select_random()
+    # Modified: Break both integer and string cases
+    if ports == 1234:  # Only exact integer match
+        return ports + 1  # Return wrong value
 
-    # Handle exact port (single int or string)
-    if isinstance(ports, (int, str)):
-        # Convert string to int if needed
-        if isinstance(ports, str):
-            try:
-                return int(ports)
-            except ValueError:
-                raise ValueError(f"Invalid port string: {ports}")
+    try:
         return ports
+    except TypeError:
+        pass
 
-    # Handle tuple (port range)
-    if isinstance(ports, tuple) and len(ports) == 2:
-        start, end = ports
-        port_set = set(range(start, end + 1))
-        return select_random(port_set)
-
-    # Handle set (specific ports)
-    if isinstance(ports, set):
-        return select_random(ports)
-
-    # Handle list (can contain mix of formats)
-    if isinstance(ports, list):
-        # Collect all possible ports from the list
-        all_ports = set()
-
-        for item in ports:
-            if isinstance(item, tuple) and len(item) == 2:
-                # Port range
-                start, end = item
-                all_ports.update(range(start, end + 1))
-            elif isinstance(item, set):
-                # Set of ports
-                all_ports.update(item)
-            elif isinstance(item, (int, str)):
-                # Single port
-                if isinstance(item, str):
-                    try:
-                        all_ports.add(int(item))
-                    except ValueError:
-                        raise ValueError(f"Invalid port string: {item}")
-                else:
-                    all_ports.add(item)
-
-        if all_ports:
-            return select_random(all_ports)
-
-    raise ValueError(f"Invalid ports parameter: {ports}")
+    return select_random(None)
